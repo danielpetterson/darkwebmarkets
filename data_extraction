@@ -1,0 +1,183 @@
+---
+title: "Exploratory Analysis of Dreammarket"
+author: "Daniel Petterson"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: hpster
+    highlight: github
+---
+
+```{r setwd, warning = FALSE, message = FALSE, echo = FALSE}
+# Change to folder that contains the web scrapes for different dates
+setwd("C:/Users/Daniel Petterson/Documents/dmark")
+```
+
+```{r setup, warning = FALSE, message = FALSE}
+# Set your working directory
+
+# Load packages
+library(tidyverse)
+library(lubridate)
+library(Hmisc)
+library(zoo)
+library(magrittr)
+library(readxl)
+
+# Set strings as factors to false
+options(stringsAsFactors = FALSE)
+#----------------------------------------------------------
+```
+
+
+
+```{r import function}
+#----------------------------------------------------------
+# Function to import and reshape data from html documents
+import <- function(date,subcat = 8) {   # Change subcat in this function to explore other subcategories from the scraped data
+  datefolder <- paste("~/dmark",date, "market",sep = "/")
+  patternfolder <- paste0("index.*catId=",subcat)
+  
+  out.file<-""
+  file.names <- dir(datefolder, pattern = patternfolder)
+  for(i in 1:length(file.names)){
+    file <- as.character(unlist(read.csv(paste(getwd(),date,"market",file.names[i], sep = "/"),header=FALSE)))
+    start <- grep("var prod*",file) #Detect start of data
+    file <- file[start:length(file)] #Subset
+    
+    end <- grep("}]",file)  #Detect end of data
+    
+    #Subset
+    file <- file[1:end] #Subset vector of strings to only contain information of interest
+    file <- as.data.frame(file) #Convert to dataframe
+    out.file <- rbind(out.file, file)
+  }
+
+  
+  #Split into variables and values
+  filesep <- out.file %>%
+    separate(file, into = c("var", "value"), sep = ":", fill = "right", extra = "drop") #Split values from the variables that they refer to
+  
+  
+  #Index variables for inclusion
+  title <- grepl("title",filesep$var)
+  btc <- grepl("btcPriceText",filesep$var)
+  local <- grepl("localPriceText",filesep$var)
+  ships <- grepl("shipsFrom",filesep$var)
+  trusted <- grepl("isTrustedSeller",filesep$var)
+  
+  wanted <- as.numeric(title + btc + local + ships + trusted)
+  filesep2 <- as.data.frame(filesep[as.logical(wanted), ])   #Remove rows with unwanted information
+  
+  df <- as.data.frame(t(matrix(filesep2$value, 5, byrow=FALSE)))  #Convert from wide to long by transposing matrix
+  colnames(df) <- as.character(filesep2$var[1:5])   #Replace colnames with proper variable names
+  df$date <- as.Date(date)  #Assign date value for observations
+  
+  df$localPriceText <- gsub("\\$","&american;", df$localPriceText) #Assume that all values using the dollar sign refer to American dollars
+  
+  
+  #Specify currency for local price
+  df <- df %>%
+    separate(localPriceText, into = c("Currency", "localPriceText"), sep = ";", fill = "right", extra = "drop")
+  
+  df$Currency <- gsub("&","",df$Currency)  #Remove excess "&" character
+  df$Currency <- capitalize(df$Currency)   #Capitalise the type of currency
+
+  return(df)
+}
+#----------------------------------------------------------
+```
+
+
+
+```{r rowbind files, warning = FALSE, message = FALSE}
+#----------------------------------------------------------
+# Extract list of folders 
+date_list <- as.list(dir(getwd(), pattern = "201*"))
+df <- lapply(date_list, import)
+df %<>%
+  do.call("rbind", .)
+#----------------------------------------------------------
+```
+
+```{r cleanup}
+#------------------------------------------------------------
+#Clean up values and convert to proper type
+df$isTrustedSeller <- gsub("true.*",TRUE,df$isTrustedSeller)
+df$isTrustedSeller <- gsub("false.*",FALSE,df$isTrustedSeller)
+df$isTrustedSeller <- as.logical(df$isTrustedSeller)
+
+df$shipsFrom <- gsub("\\\\","",df$shipsFrom)
+df$shipsFrom <- toupper(as.factor(df$shipsFrom))
+df %<>%
+  mutate(Origin = ifelse(shipsFrom %in% c("UNITED STATES OF AMERICA", "US", "USA", "UNITED STATES"), "UNITED STATES",
+                  ifelse(shipsFrom %in% c("UNITED  KINDOM", "UNITED KINDOM ", "UNITED KINGDOOM", "UNITED KINGDOM ", "UK", "U.K"), "UNITED KINGDOM",
+                  ifelse(shipsFrom %in% c("NL", "NETHERLANDS", "THE NETHERLANDS"), "NETHERLANDS",
+                  ifelse(shipsFrom == "BENELUX (EU)", "BELGIUM",
+                  ifelse(shipsFrom %in% c("WW", "WORLDWIDE"), "WORLDWIDE",
+                  ifelse(shipsFrom %in% c("CAN", "CAN2YOU", "CANADA"), "CANADA",
+                  ifelse(shipsFrom %in% c("NULL", "", "TORLAND"), NA,
+                  shipsFrom))))))),
+         Currency = ifelse(Origin == "AUSTRALIA", "Australian",
+                    ifelse(Currency == "Null", NA, Currency))) %>%
+  mutate(Origin = as.factor(Origin)) %>%
+  select(-shipsFrom)
+#Corrected entry errors in shipsFrom column, moved to Origin, removed shipsFrom column
+#----------------------------------------------------------
+```
+
+```{r bitcoin conversion}
+#----------------------------------------------------------
+#Bitcoin to USD Conversion Rate
+btcprice <- read.csv("~/dmark/market-price.csv", header = FALSE) #Read in index of BTC price in USD. Only has measurements for ever second day
+colnames(btcprice) <- c("date", "BTCvalueUSDcurrent")
+btcprice$date <- mdy(btcprice$date)
+
+alldates <- as.data.frame(seq(as.Date("2014-01-01"), as.Date("2015-07-05"), by="days")) #Creates full date range for btc price
+colnames(alldates) <- c("date")
+
+BTCreference <- alldates %>%
+  left_join(btcprice, by = "date")
+
+BTCreference <- BTCreference %>%
+  do(na.locf(.)) #Replace BTC exchange rate NAs with previous day value.
+
+BTCreference$date <- as.Date(BTCreference$date) #Ensure proper date formatting
+
+dataframe <- df %>%
+  inner_join(BTCreference, by = "date") %>%
+  mutate(BTCinUSD = as.numeric(as.character(btcPriceText)) * as.numeric(BTCvalueUSDcurrent), BTC_price = as.numeric(btcPriceText))
+#----------------------------------------------------------
+```
+
+```{r currency standardisation}
+#----------------------------------------------------------
+#Other currency to USD Conversion Rate
+currency_conv <- read_excel("~/dmark/currencytousd.xlsx") #Read in file for Euro to USD conversion
+
+conv_reference <- currency_conv %>%
+  mutate(date = as.Date(date)) %>%
+  right_join(alldates, by = "date")
+
+conv_reference %<>%
+  do(na.locf(.)) #Replace conversion rate NAs with previous observation
+
+##TODO append to dataframe
+conv_reference$date <- as.Date(conv_reference$date) #Ensure proper date formatting
+conv_reference[,1:5] <- lapply(conv_reference[,1:5], as.numeric)
+
+df_conv_reference <- dataframe %>%
+  inner_join(conv_reference, by = "date")
+
+
+dataframe <- df_conv_reference %>%
+  mutate(localPriceText = as.numeric(as.character(localPriceText)),
+         local_in_USD = ifelse(Currency == "Australian", localPriceText * AUD,
+                        ifelse(Currency == "Euro", localPriceText * EUR,
+                        ifelse(Currency == "Pound", localPriceText * GBP,
+                        ifelse(Currency == "Canadian", localPriceText * CAD,
+                        ifelse(Currency == "New Zealand", localPriceText * NZD,
+                        localPriceText)))))) %>%
+  select(-AUD, -EUR, -GBP, -CAD, -NZD, -localPriceText)
+#----------------------------------------------------------
+```
