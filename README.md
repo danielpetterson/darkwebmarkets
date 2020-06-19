@@ -14,7 +14,7 @@ The database currently contains approximately 400,000 listings from two of the l
 I've been working on a webscraper to allow for comparison of historical data and recent listings and hope to have this operational shortly.
 
 ### File Info:
-ConvertFilesToHTML contains a script to make the scraped files readable as HTML files
-The Cryptomarket files contain functions to extract data of interest and some preliminary cleaning
-masterdarknet.xlsx is the master dataframe
+ConvertFilesToHTML contains a script to make the scraped files readable as HTML files //
+The Cryptomarket files contain functions to extract data of interest and some preliminary cleaning //
+masterdarknet.xlsx is the master dataframe //
 darknet_1 features code to merge and standardise the data from the different markets including checking for inconsistencies and further cleaning. Currently working on a Dash app to display summary statistics by market.
